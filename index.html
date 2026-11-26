@@ -38,6 +38,8 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:3px soli
 #thumb{max-width:100%;max-height:120px;border-radius:8px;display:none}
 #toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:10px;display:none;max-width:90%;z-index:5}
 small{color:var(--muted)}
+#akey{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit;margin:6px 0}
+details summary{cursor:pointer;color:var(--muted);font-size:14px}
 .step{border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:8px;background:var(--bg)}
 .step b{font-size:15px}
 .pg{display:flex;gap:8px;align-items:center}
@@ -88,6 +90,7 @@ Suma: $\sum_{i=1}^n i = \frac{n(n+1)}{2}$, con $\pi \approx 3.14$ y $a \leq b$.<
     <button class="btn" id="cam">Tomar foto del apunte</button>
     <input id="file" type="file" accept="image/*" capture="environment" hidden>
     <img id="thumb" alt="Foto del apunte">
+    <details id="ak"><summary>Clave de API para leer apuntes</summary><input id="akey" type="password" placeholder="sk-ant-..." autocomplete="off" aria-label="Clave de API"><small>Se guarda solo en este dispositivo. Dentro de Claude no hace falta.</small></details>
     <small>En el cel, “Descargar” abre el menú de compartir. Si no sale, mantén presionada la hoja para guardarla.</small>
   </div>
 </section>
@@ -193,8 +196,21 @@ group('sheet','sheet');group('ink','ink');
 $('txt').addEventListener('input',redraw);
 [['size','size'],['margin','margin'],['jit','jit']].forEach(([id,k])=>$(id).addEventListener('input',e=>{S[k]=+e.target.value;redraw()}));
 $('cam').onclick=()=>$('file').click();
-$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const t=$('thumb');t.src=URL.createObjectURL(f);t.style.display='block';
-  toast('Foto recibida. La lectura del apunte llega en la versión 2.')};
+const PROMPT='Transcribe este apunte escrito a mano en español, respetando los saltos de línea. Pon toda expresión matemática en LaTeX entre $...$, usando solo \\frac{}{}, \\sqrt{}, ^, _, \\int_a^b, \\sum, \\pi, \\theta, \\leq, \\geq, \\neq, \\approx, \\infty. Responde solo con el texto transcrito, sin comentarios.';
+try{$('akey').value=localStorage.getItem('akey')||''}catch(e){}
+$('akey').oninput=e=>{try{localStorage.setItem('akey',e.target.value.trim())}catch(_){}};
+async function leerApunte(f){const cv=await imgCanvas(f),blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));
+  try{const sm=window.claude&&await claude.use('sample');if(sm&&(await sm.limits()).images){const r=await sm(PROMPT,{images:[blob]});return r.text}}catch(e){if(e&&e.code==='not_granted'){throw new Error('Permiso denegado')}}
+  const key=($('akey').value||'').trim();if(!key){$('ak').open=true;throw new Error('Pega tu clave de API para leer apuntes')}
+  const data=cv.toDataURL('image/jpeg',.85).split(',')[1];
+  const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-5-5',max_tokens:2000,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:'image/jpeg',data}},{type:'text',text:PROMPT}]}]})});
+  const j=await r.json();if(!r.ok)throw new Error((j.error&&j.error.message)||('Error '+r.status));
+  return j.content.filter(x=>x.type==='text').map(x=>x.text).join('\n')}
+$('file').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;const t=$('thumb');t.src=URL.createObjectURL(f);t.style.display='block';
+  $('cam').disabled=true;toast('Leyendo el apunte…');
+  try{const txt=(await leerApunte(f)).trim();if(!txt)throw new Error('No encontré texto en la foto');$('txt').value=txt;render();toast('Listo: tu apunte ya está con tu letra. Puedes corregir el texto.')}
+  catch(err){toast('No pude leer el apunte: '+err.message)}finally{$('cam').disabled=false}};
 $('export').onclick=async()=>{const cs=[...document.querySelectorAll('#pages canvas')];
   const files=await Promise.all(cs.map((c,i)=>new Promise(r=>c.toBlob(b=>r(new File([b],`apunte-${i+1}.png`,{type:'image/png'})),'image/png'))));
   try{if(navigator.canShare&&navigator.canShare({files})){await navigator.share({files});return}}catch(e){if(e.name==='AbortError')return}
